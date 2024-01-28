@@ -65,6 +65,10 @@ Weight by Sierra stack trace:
   test::main: 34
   test::main -> test::match_long: 11
   test::main -> test::match_short: 6
+Weight by Cairo stack trace:
+  test::main: 34
+  test::main -> test::match_long: 11
+  test::main -> test::match_short: 6
 
 //! > ==========================================================================
 
@@ -185,6 +189,11 @@ Weight by Sierra stack trace:
   test::main -> test::foo: 99
   test::main -> test::foo -> core::integer::U8Add::add: 42
   test::main -> test::foo -> core::integer::U8Add::add -> core::result::ResultTraitImpl::<core::integer::u8, core::integer::u8>::expect::<core::integer::u8Drop>: 12
+Weight by Cairo stack trace:
+  test::main: 132
+  test::main -> test::foo: 99
+  test::main -> test::foo -> core::integer::U8Add::add: 42
+  test::main -> test::foo -> core::integer::U8Add::add -> core::result::ResultTraitImpl::<core::integer::u8, core::integer::u8>::expect::<core::integer::u8Drop>: 12
 
 //! > ==========================================================================
 
@@ -230,10 +239,12 @@ Weight by Cairo function:
   function lib.cairo::test_pedersen: 15
 Weight by Sierra stack trace:
   test::test_pedersen: 15
+Weight by Cairo stack trace:
+  test::test_pedersen: 15
 
 //! > ==========================================================================
 
-//! > Test profiling info of a program with a simple loop
+//! > Test profiling info of a program with a simple loop.
 
 //! > test_runner_name
 test_profiling
@@ -314,6 +325,8 @@ Weight by Sierra stack trace:
   test::main -> test::main[expr12] -> test::main[expr12] -> test::main[expr12] -> test::main[expr12]: 40
   test::main -> test::main[expr12] -> test::main[expr12] -> test::main[expr12] -> test::main[expr12] -> test::main[expr12]: 27
   test::main -> test::main[expr12] -> test::main[expr12] -> test::main[expr12] -> test::main[expr12] -> test::main[expr12] -> test::main[expr12]: 14
+Weight by Cairo stack trace:
+  test::main: 90
 
 //! > ==========================================================================
 
@@ -379,10 +392,14 @@ Weight by Sierra stack trace:
   test::main: 11
   test::main -> test::foo1: 9
   test::main -> test::foo1 -> test::foo2: 6
+Weight by Cairo stack trace:
+  test::main: 11
+  test::main -> test::foo1: 9
+  test::main -> test::foo1 -> test::foo2: 6
 
 //! > ==========================================================================
 
-//! > Test max stack trace depth.2
+//! > Test no max stack trace depth.
 
 //! > test_runner_name
 test_profiling
@@ -442,3 +459,64 @@ Weight by Sierra stack trace:
   test::main -> test::foo1: 9
   test::main -> test::foo1 -> test::foo2: 6
   test::main -> test::foo1 -> test::foo2 -> test::foo3: 2
+Weight by Cairo stack trace:
+  test::main: 11
+  test::main -> test::foo1: 9
+  test::main -> test::foo1 -> test::foo2: 6
+  test::main -> test::foo1 -> test::foo2 -> test::foo3: 2
+
+//! > ==========================================================================
+
+//! > Test inlining // TODO(yg): PR for test for inlining.
+
+//! > test_runner_name
+test_profiling
+
+//! > cairo_code
+fn main() {
+    foo();
+}
+fn foo() {
+  my_mod::bar();
+}
+#[inline(always)]
+fn bar() {
+}
+
+//! > function_name
+main
+
+//! > expected_profiling_info
+Weight by sierra statement:
+  statement 0: 1 (function_call<user@test::foo>() -> ([0]))
+  statement 3: 1 (return([1]))
+  statement 4: 1 (function_call<user@test::my_mod::bar>() -> ([0]))
+  statement 7: 1 (return([1]))
+  statement 9: 1 (return([0]))
+Weight by concrete libfunc:
+  libfunc function_call<user@test::foo>: 1
+  libfunc function_call<user@test::my_mod::bar>: 1
+  return: 3
+Weight by generic libfunc:
+  libfunc function_call: 2
+  return: 3
+Weight by user function (inc. generated):
+  function test::foo: 2
+  function test::main: 2
+  function test::my_mod::bar: 1
+Weight by original user function:
+  function test::foo: 2
+  function test::main: 2
+  function test::my_mod::bar: 1
+Weight by Cairo function:
+  function lib.cairo::foo: 2
+  function lib.cairo::main: 2
+  function lib.cairo::my_mod::bar: 1
+Weight by Sierra stack trace:
+  test::main: 5
+  test::main -> test::foo: 3
+  test::main -> test::foo -> test::my_mod::bar: 1
+Weight by Cairo stack trace:
+  test::main: 5
+  test::main -> test::foo: 3
+  test::main -> test::foo -> test::my_mod::bar: 1

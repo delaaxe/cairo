@@ -1,6 +1,11 @@
-use std::fmt::Display;
+use std::fmt::{Debug, Display};
 
+use cairo_lang_compiler::db::RootDatabase;
+use cairo_lang_debug::DebugWithDb;
+use cairo_lang_lowering::ids::FunctionLongId;
+use cairo_lang_semantic::db::SemanticGroup;
 use cairo_lang_sierra::program::{GenStatement, Program, StatementIdx};
+use cairo_lang_sierra_generator::db::SierraGenGroup;
 use cairo_lang_utils::ordered_hash_map::OrderedHashMap;
 use cairo_lang_utils::unordered_hash_map::UnorderedHashMap;
 use smol_str::SmolStr;
@@ -31,11 +36,16 @@ pub struct ProcessedProfilingInfo {
     /// the relevant GenStatement.
     pub sierra_statements_weights:
         OrderedHashMap<StatementIdx, (usize, GenStatement<StatementIdx>)>,
-    /// A map of weights of each stack trace.
-    /// The key is a function stack trace of an executed function. The stack trace is represented
-    /// as a vector of the function names.
+    /// A map of weights of each Sierra stack trace.
+    /// The key is a function stack trace of an executed Sierra function. The stack trace is
+    /// represented as a vector of the function names.
     /// The value is the weight of the stack trace.
-    pub stack_trace_weights: OrderedHashMap<Vec<String>, usize>,
+    pub sierra_stack_trace_weights: OrderedHashMap<Vec<String>, usize>,
+    /// A map of weights of each Cairo stack trace.
+    /// The key is a function stack trace of an executed Cairo function. The stack trace is
+    /// represented as a vector of the function paths.
+    /// The value is the weight of the stack trace.
+    pub cairo_stack_trace_weights: OrderedHashMap<Vec<String>, usize>,
 
     /// Weight (in steps in the relevant run) of each concrete libfunc.
     pub concrete_libfuncs_weights: Option<OrderedHashMap<SmolStr, usize>>,
@@ -91,9 +101,15 @@ impl Display for ProcessedProfilingInfo {
         }
 
         writeln!(f, "Weight by Sierra stack trace:")?;
-        for (stack_trace, weight) in self.stack_trace_weights.iter() {
-            let stack_trace_str = stack_trace.join(" -> ");
-            writeln!(f, "  {stack_trace_str}: {weight}")?;
+        for (sierra_stack_trace, weight) in self.sierra_stack_trace_weights.iter() {
+            let sierra_stack_trace_str = sierra_stack_trace.join(" -> ");
+            writeln!(f, "  {sierra_stack_trace_str}: {weight}")?;
+        }
+
+        writeln!(f, "Weight by Cairo stack trace:")?;
+        for (cairo_stack_trace, weight) in self.cairo_stack_trace_weights.iter() {
+            let cairo_stack_trace_str: String = cairo_stack_trace.join(" -> ");
+            writeln!(f, "  {cairo_stack_trace_str}: {weight}")?;
         }
 
         Ok(())
@@ -133,7 +149,8 @@ impl Default for ProfilingInfoProcessorParams {
 }
 /// A processor for profiling info. Used to process the raw profiling info (basic info collected
 /// during the run) into a more detailed profiling info that can also be formatted.
-pub struct ProfilingInfoProcessor {
+pub struct ProfilingInfoProcessor<'a> {
+    db: Option<&'a RootDatabase>, // TODO(yg): use dyn some-other-db
     sierra_program: Program,
     /// A map between sierra statement index and the string representation of the Cairo function
     /// that generated it. The function representation is composed of the function name and the
@@ -141,12 +158,14 @@ pub struct ProfilingInfoProcessor {
     statements_functions: UnorderedHashMap<StatementIdx, String>,
     params: ProfilingInfoProcessorParams,
 }
-impl ProfilingInfoProcessor {
+impl<'a> ProfilingInfoProcessor<'a> {
     pub fn new(
+        db: Option<&'a RootDatabase>,
         sierra_program: Program,
         statements_functions: UnorderedHashMap<StatementIdx, String>,
     ) -> Self {
         Self {
+            db,
             sierra_program,
             statements_functions,
             params: ProfilingInfoProcessorParams::default(),
@@ -231,8 +250,7 @@ impl ProfilingInfoProcessor {
             }
 
             if params.process_by_cairo_function {
-                // TODO(Gil): Fill all the `Unknown functions` in the cairo functions
-                // profiling.
+                // TODO(Gil): Fill all the `Unknown functions` in the cairo functions profiling.
                 let function_identifier = self
                     .statements_functions
                     .get(statement_idx)
@@ -289,6 +307,8 @@ impl ProfilingInfoProcessor {
                 .aggregate_by(
                     |idx| -> SmolStr {
                         let full_name = self.sierra_program.funcs[*idx].id.to_string();
+                        // TODO(yuval): This relies on the format of a generated user function name.
+                        // Fix to not rely on it.
                         full_name.split('[').next().unwrap().into()
                     },
                     |x, y| x + y,
@@ -317,7 +337,7 @@ impl ProfilingInfoProcessor {
             }
         }
 
-        let stack_trace_weights = raw_profiling_info
+        let sierra_stack_trace_weights: OrderedHashMap<Vec<String>, usize> = raw_profiling_info
             .stack_trace_weights
             .iter_sorted_by_key(|(idx_stack_trace, weight)| {
                 (usize::MAX - **weight, (*idx_stack_trace).clone())
@@ -330,9 +350,22 @@ impl ProfilingInfoProcessor {
             })
             .collect();
 
+        let cairo_stack_trace_weights: OrderedHashMap<Vec<String>, usize> = raw_profiling_info
+            .stack_trace_weights
+            .aggregate_by(
+                |sierra_trace| self.sierra_stack_trace_to_cairo_stack_trace(&sierra_trace),
+                |x, y| std::cmp::max(*x, *y),
+                &0,
+            )
+            .into_iter_sorted_by_key(|(cairo_trace, weight)| {
+                (usize::MAX - *weight, cairo_trace.clone())
+            })
+            .collect();
+
         ProcessedProfilingInfo {
             sierra_statements_weights,
-            stack_trace_weights,
+            sierra_stack_trace_weights,
+            cairo_stack_trace_weights,
             generic_libfuncs_weights: Some(generic_libfuncs_weights),
             concrete_libfuncs_weights: Some(concrete_libfuncs_weights),
             user_functions_weights: Some(user_functions_weights),
@@ -340,6 +373,52 @@ impl ProfilingInfoProcessor {
             cairo_functions_weights: Some(cairo_functions_weights),
             return_weight,
         }
+    }
+
+    /// Converts a Sierra stack trace to its Cairo stack trace.
+    fn sierra_stack_trace_to_cairo_stack_trace(&self, sierra_trace: &[usize]) -> Vec<String> {
+        let mut cairo_trace = Vec::new();
+        // TODO(yg): change from unwrap. Should it be option at all?
+        let db = self.db.unwrap();
+        for sierra_function_idx in sierra_trace {
+            let sierra_function = &self.sierra_program.funcs[*sierra_function_idx];
+            let lowering_function_id = db.lookup_intern_sierra_function(sierra_function.id.clone());
+            let cairo_function_identifier = match lowering_function_id.lookup(db) {
+                FunctionLongId::Semantic(id) => format!("{:?}", id.debug(db)),
+                // TODO(ygg): PR for Sierra stack traces without generated. Skip like done here.
+                FunctionLongId::Generated(_) => continue,
+            };
+
+            // // Sierra calls to generated functions don't reflect changes of the Cairo stack.
+            // // TODO(yuval): This relies on the format of a generated user function name. Fix to
+            // not // rely on it.
+            // // TODO(yg): with db, can lookup the intern and match to check if generated.
+            // if (&self.sierra_program.funcs[*sierra_function_idx]).id.to_string().find('[').
+            // is_some() {
+            //     continue;
+            // }
+
+            // // The index of the last statement in the sierra function.
+            // // We use the last statement and not the first statement although it is more
+            // difficult. // The reason is that the first statement might not have a
+            // Cairo location (e.g. // `revoke_ap`). The last statement of a function,
+            // though, must(*) be a `return` and // thus must have a Cairo location. (*)
+            // In programs compiled from Cairo, and in // functions that are reachable.
+            // let sierra_statement_idx = StatementIdx(
+            //     match self.sierra_program.funcs.get(*sierra_function_idx + 1) {
+            //         Some(x) => x.entry_point.0,
+            //         None => self.sierra_program.statements.len(),
+            //     } - 1,
+            // );
+
+            // let cairo_function_identifier = self
+            //     .statements_functions
+            //     .get(&sierra_statement_idx)
+            //     .unwrap_or(&"unknown".to_string())
+            //     .clone();
+            cairo_trace.push(cairo_function_identifier);
+        }
+        cairo_trace
     }
 }
 

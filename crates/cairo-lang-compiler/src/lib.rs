@@ -10,6 +10,7 @@ use anyhow::{Context, Result};
 use cairo_lang_filesystem::ids::CrateId;
 use cairo_lang_sierra::program::Program;
 use cairo_lang_sierra_generator::db::SierraGenGroup;
+use cairo_lang_sierra_generator::program_generator::SierraProgramEx;
 use cairo_lang_sierra_generator::replace_ids::replace_sierra_ids_in_program;
 
 use crate::db::RootDatabase;
@@ -99,10 +100,13 @@ pub fn compile_prepared_db(
 ) -> Result<Program> {
     compiler_config.diagnostics_reporter.ensure(db)?;
 
-    let (sierra_program, _statements_locations) = db
-        .get_sierra_program(main_crate_ids)
-        .to_option()
-        .context("Compilation failed without any diagnostics")?;
+    // TODO(ygg): PR for SierraProgramEx.
+    let SierraProgramEx { program: sierra_program, .. } = Arc::try_unwrap(
+        db.get_sierra_program(main_crate_ids)
+            .to_option()
+            .context("Compilation failed without any diagnostics")?,
+    )
+    .unwrap_or_else(|arc| (*arc).clone());
 
     // Try to move the program out of the Arc if it is not cached in Salsa, or just clone it.
     let mut sierra_program = Arc::try_unwrap(sierra_program).unwrap_or_else(|arc| (*arc).clone());

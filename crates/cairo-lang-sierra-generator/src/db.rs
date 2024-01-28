@@ -119,14 +119,14 @@ pub trait SierraGenGroup: LoweringGroup + Upcast<dyn LoweringGroup> {
     fn get_sierra_program_for_functions(
         &self,
         requested_function_ids: Vec<ConcreteFunctionWithBodyId>,
-    ) -> Maybe<(Arc<cairo_lang_sierra::program::Program>, Arc<StatementsLocations>)>;
+    ) -> Maybe<Arc<program_generator::SierraProgramEx>>;
 
     /// Returns the [cairo_lang_sierra::program::Program] object of the requested crates.
     #[salsa::invoke(program_generator::get_sierra_program)]
     fn get_sierra_program(
         &self,
         requested_crate_ids: Vec<CrateId>,
-    ) -> Maybe<(Arc<cairo_lang_sierra::program::Program>, Arc<StatementsLocations>)>;
+    ) -> Maybe<Arc<program_generator::SierraProgramEx>>;
 }
 
 fn get_function_signature(

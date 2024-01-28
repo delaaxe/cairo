@@ -13,6 +13,7 @@ use cairo_lang_lowering::ids::ConcreteFunctionWithBodyId;
 use cairo_lang_sierra as sierra;
 use cairo_lang_sierra_generator::canonical_id_replacer::CanonicalReplacer;
 use cairo_lang_sierra_generator::db::SierraGenGroup;
+use cairo_lang_sierra_generator::program_generator::SierraProgramEx;
 use cairo_lang_sierra_generator::replace_ids::{replace_sierra_ids_in_program, SierraIdReplacer};
 use cairo_lang_utils::bigint::{deserialize_big_uint, serialize_big_uint, BigUintAsHex};
 use itertools::{chain, Itertools};
@@ -193,12 +194,14 @@ fn compile_contract_with_prepared_and_checked_db(
 ) -> Result<ContractClass> {
     let SemanticEntryPoints { external, l1_handler, constructor } =
         extract_semantic_entrypoints(db, contract)?;
-    let (mut sierra_program, _statements_locations) = db
-        .get_sierra_program_for_functions(
+    let SierraProgramEx { program: mut sierra_program, .. } = Arc::try_unwrap(
+        db.get_sierra_program_for_functions(
             chain!(&external, &l1_handler, &constructor).map(|f| f.value).collect(),
         )
         .to_option()
-        .with_context(|| "Compilation failed without any diagnostics.")?;
+        .with_context(|| "Compilation failed without any diagnostics.")?,
+    )
+    .unwrap_or_else(|arc| (*arc).clone());
 
     if compiler_config.replace_ids {
         sierra_program = Arc::new(replace_sierra_ids_in_program(db, &sierra_program));
