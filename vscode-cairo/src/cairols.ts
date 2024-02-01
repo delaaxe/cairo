@@ -50,21 +50,14 @@ function rootPath(ctx: Context): string {
   return rootPath;
 }
 
-function replacePathPlaceholders(path: string, root: string): string {
-  return path
-    .replace(/\${workspaceFolder}/g, root)
-    .replace(/\${userHome}/g, process.env["HOME"] ?? "");
-}
-
 async function findLanguageServerExecutable(ctx: Context) {
-  const root = rootPath(ctx);
   const configPath = ctx.config.get<string>("languageServerPath");
   if (configPath) {
-    const serverPath = replacePathPlaceholders(configPath, root);
-    return await checkTool(serverPath);
+    return await checkTool(configPath);
   }
 
   // TODO(spapini): Use a bundled language server.
+  const root = rootPath(ctx);
   return findDevLanguageServerAt(root);
 }
 
@@ -72,11 +65,9 @@ async function findScarbExecutablePath(
   ctx: Context,
 ): Promise<string | undefined> {
   // Check config for scarb path.
-  const root = rootPath(ctx);
   const configPath = ctx.config.get<string>("scarbPath");
   if (configPath) {
-    const scarbPath = replacePathPlaceholders(configPath, root);
-    return await checkTool(scarbPath);
+    return await checkTool(configPath);
   }
 
   // Check PATH env var for scarb path.
